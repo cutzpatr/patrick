@@ -1,24 +1,13 @@
 package session
 
 import (
-	"errors"
+	"github.com/trisolaria/connectulum/pkg/db"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/trisolaria/connectulum/mocks"
 	"github.com/trisolaria/connectulum/pkg/crypt"
 )
-
-type AlwaysSuccessAuthenticator struct{}
-
-func (as *AlwaysSuccessAuthenticator) Authenticate(u, p string) bool {
-	return true
-}
-
-type AlwaysFailAuthenticator struct{}
-
-func (as *AlwaysFailAuthenticator) Authenticate(u, p string) bool {
-	return false
-}
 
 func TestUserSession_Authenticate(t *testing.T) {
 	type fields struct {
@@ -42,7 +31,7 @@ func TestUserSession_Authenticate(t *testing.T) {
 				password: "pass123",
 			},
 			want:   true,
-			fields: fields{IDP: &AlwaysSuccessAuthenticator{}, maxTimes: 1},
+			fields: fields{IDP: mocks.NewAuthenticator(100), maxTimes: 1},
 		},
 		{
 			name: "fail to connect to due to never trying",
@@ -51,7 +40,7 @@ func TestUserSession_Authenticate(t *testing.T) {
 				password: "pass123",
 			},
 			want:   false,
-			fields: fields{IDP: &AlwaysSuccessAuthenticator{}, maxTimes: 0},
+			fields: fields{IDP: mocks.NewAuthenticator(100), maxTimes: 0},
 		},
 		{
 			name: "fail to connect",
@@ -60,23 +49,23 @@ func TestUserSession_Authenticate(t *testing.T) {
 				password: "pass123",
 			},
 			want:   false,
-			fields: fields{IDP: &AlwaysFailAuthenticator{}, maxTimes: 100},
+			fields: fields{IDP: mocks.NewAuthenticator(0), maxTimes: 100},
 		},
 		{
-			name: "successfully connect to IndeterminantAuthenticator due to many retries",
+			name: "successfully connect to IndeterminantAuthenticator via many retries",
 			args: args{
 				username: "user1",
 				password: "pass123",
 			},
 			want:   true,
-			fields: fields{IDP: &crypt.IndeterminantAuthenticator{}, maxTimes: 10},
+			fields: fields{IDP: mocks.NewAuthenticator(50), maxTimes: 10},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &UserSession{
-				idp:         tt.fields.IDP,
-				retryPolicy: retryPolicy{maxTimes: tt.fields.maxTimes},
+				idp:    tt.fields.IDP,
+				policy: db.RetryPolicy{MaxTimes: tt.fields.maxTimes},
 			}
 			got := s.Authenticate(tt.args.username, tt.args.password)
 			assert.Equal(t, tt.want, got, "Authenticate() = %v, want %v", got, tt.want)
@@ -85,8 +74,13 @@ func TestUserSession_Authenticate(t *testing.T) {
 }
 
 func TestUserSession_NewUserSession(t *testing.T) {
+
+	defaultAuth := mocks.NewAuthenticator(50)
+	defaultDB := mocks.TrisolanData()
+
 	type fields struct {
-		IDP crypt.Authenticator
+		idp *crypt.Authenticator
+		db  *db.Data
 	}
 	type args struct {
 		domain string
@@ -101,41 +95,32 @@ func TestUserSession_NewUserSession(t *testing.T) {
 		{
 			name: "supported domain - 10 retries initialized in cache",
 			args: args{domain: "trisolan.high"},
+			fields: fields{
+				idp: &defaultAuth,
+				db:  &defaultDB,
+			},
 			want: &UserSession{
-				idp:         &crypt.IndeterminantAuthenticator{},
-				retryPolicy: retryPolicy{maxTimes: 10},
+				idp:    defaultAuth,
+				policy: db.RetryPolicy{MaxTimes: 10},
 			},
 		},
 		{
 			name: "supported domain - 2 retries initialized in cache",
 			args: args{domain: "trisolan.low"},
-			want: &UserSession{
-				idp:         &crypt.IndeterminantAuthenticator{},
-				retryPolicy: retryPolicy{maxTimes: 2},
+			fields: fields{
+				idp: &defaultAuth,
+				db:  &defaultDB,
 			},
-		},
-		{
-			name: "supported domain - not initialized in cache",
-			args: args{domain: "trisolan.unset"},
 			want: &UserSession{
-				idp:         &crypt.IndeterminantAuthenticator{},
-				retryPolicy: retryPolicy{maxTimes: 1},
+				idp:    defaultAuth,
+				policy: db.RetryPolicy{MaxTimes: 2},
 			},
-		},
-		{
-			name:    "unsupported domain",
-			args:    args{domain: "example.com"},
-			wantErr: errors.New(`unsupported domain for UserSession: "example.com"`),
-			want:    nil,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &UserSession{
-				idp: tt.fields.IDP,
-			}
 
-			err := s.NewUserSession(tt.args.domain)
+			s, err := NewUserSession(tt.fields.idp, tt.fields.db, tt.args.domain)
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {
